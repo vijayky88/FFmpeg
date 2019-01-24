@@ -1,0 +1,309 @@
+diff --git a/doc/examples/decode_video.c b/doc/examples/decode_video.c
+index 5a9d43f..0569b1b 100644
+--- a/doc/examples/decode_video.c
++++ b/doc/examples/decode_video.c
+@@ -53,7 +53,7 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt,
+ {
+     char buf[1024];
+     int ret;
+-
++    //printf("\ndecode");
+     ret = avcodec_send_packet(dec_ctx, pkt);
+     if (ret < 0) {
+         fprintf(stderr, "Error sending a packet for decoding\n");
+@@ -61,7 +61,18 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt,
+     }
+ 
+     while (ret >= 0) {
++        //printf("\n calling avcodec_receive_frame start");
+         ret = avcodec_receive_frame(dec_ctx, frame);
++        if (frame)
++        {
++        	printf("\ntest::sidedata:no=%d,sidedata= %p",frame->nb_side_data,frame->side_data);
++		if (frame->side_data && frame->side_data[0])
++                {
++        		printf("\ntest::sidedata:no=%d,sidedata= %p,frame->side_data[0] = %p,frame->buf->data=%p,data=",frame->nb_side_data,frame->side_data,frame->side_data[0],frame->side_data[0]->buf->data);
++                        if ( frame->side_data[0]->buf->data) for ( int i = 0; i < frame->side_data[0]->buf->size; i ++ ) printf("%c",frame->side_data[0]->buf->data[i]);
++                }
++        }
++        //printf("\n calling avcodec_receive_frame done,ret=%d",ret);
+         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+             return;
+         else if (ret < 0) {
+@@ -69,7 +80,7 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt,
+             exit(1);
+         }
+ 
+-        printf("saving frame %3d\n", dec_ctx->frame_number);
++        printf("\nsaving frame %3d", dec_ctx->frame_number);
+         fflush(stdout);
+ 
+         /* the picture is allocated by the decoder. no need to
+@@ -109,7 +120,7 @@ int main(int argc, char **argv)
+     memset(inbuf + INBUF_SIZE, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+ 
+     /* find the MPEG-1 video decoder */
+-    codec = avcodec_find_decoder(AV_CODEC_ID_MPEG1VIDEO);
++    codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+     if (!codec) {
+         fprintf(stderr, "Codec not found\n");
+         exit(1);
+diff --git a/doc/examples/muxing.c b/doc/examples/muxing.c
+index 08da98e..39d660c 100644
+--- a/doc/examples/muxing.c
++++ b/doc/examples/muxing.c
+@@ -500,6 +500,52 @@ static AVFrame *get_video_frame(OutputStream *ost)
+     return ost->frame;
+ }
+ 
++static int gen_tvu_sei_nal(uint8_t *nal_tvu_sei)
++{
++        const uint8_t tvu_nal_sei_head[6] = {0x00, 0x00, 0x00, 0x01, 0x06, /* SEI head part */
++                                                                0x64       /* playload type */
++                                        };
++        uint8_t tvu_nal_sei_total_len           = 2 + 2 + 16 + 2 + 10;  //(version, count) + (subid, sublen) + peerid info + (subid, sublen) + starting_time
++        uint8_t tvu_nal_sei_data_ver            = 0x01;
++        uint8_t tvu_nal_sei_subid_count         = 0x00;
++        uint8_t tvu_nal_sei_subid               = 0x00;
++        uint8_t tvu_nal_sei_subid_len           = 0x00;
++        uint8_t tvu_nal_sei_trailing_symbol     = 0x80;
++
++        uint8_t *guid = "hello1234 my uuid is:123456789#1111*2222";
++
++        int index = 0;
++
++        {
++                //264 write to tvu sei nal
++                memcpy(nal_tvu_sei, tvu_nal_sei_head, 6);                       //sei head and playload type
++                index = 6;
++
++                *(nal_tvu_sei + index) = tvu_nal_sei_total_len;         //write total len
++                index++;
++        }
++
++        *(nal_tvu_sei + index) = tvu_nal_sei_data_ver;     //write data version
++        index++;
++
++        *(nal_tvu_sei + index) = 0x01;                  //write subid count
++        index++;
++
++        //write total uid
++        *(nal_tvu_sei + index) = 0x05;                  //write subid
++        index++;
++
++        *(nal_tvu_sei + index) = 36;                    //write subid_len
++        index++;
++
++        memcpy(nal_tvu_sei + index, guid, 36);
++        index += 36;
++
++        *(nal_tvu_sei + index) = tvu_nal_sei_trailing_symbol;           //write subid count
++        index++;
++        return index;
++}
++
+ /*
+  * encode one video frame and send it to the muxer
+  * return 1 when encoding is finished, 0 otherwise
+@@ -517,14 +563,49 @@ static int write_video_frame(AVFormatContext *oc, OutputStream *ost)
+     frame = get_video_frame(ost);
+ 
+     av_init_packet(&pkt);
++   
++#if 1
++    static int add_sei_data = 0;
++    if (frame)
++    {
++        frame->nb_side_data = 0;
++        frame->side_data = NULL;
++    }
++    int sei_interval = 2;
++    if (frame)
++    {
++        frame->nb_side_data = 1;
++        frame->side_data    = (AVFrameSideData **) malloc(1* sizeof (AVFrameSideData*));
++        frame->side_data[0] = (AVFrameSideData *)  malloc(sizeof (AVFrameSideData));
++        memset(frame->side_data[0], 0, sizeof (AVFrameSideData));
++        uint8_t *nal_tvu_sei      = (uint8_t *) av_mallocz(2560);
++        uint8_t index             = gen_tvu_sei_nal(nal_tvu_sei);
++        nal_tvu_sei[47]            = add_sei_data%10 +97;
++        frame->side_data[0]->data = nal_tvu_sei;
++        frame->side_data[0]->size = index; 
++        //printf("\nputting sei data");
++    }
++#endif
+ 
+     /* encode the image */
++   //printf("\n calling avcodec_encode_video2");
+     ret = avcodec_encode_video2(c, &pkt, frame, &got_packet);
+     if (ret < 0) {
+         fprintf(stderr, "Error encoding video frame: %s\n", av_err2str(ret));
+         exit(1);
+     }
+ 
++#if 0
++   
++    if (frame)
++    {
++      //free(frame->side_data[0]->data); //lib will free
++      free(frame->side_data[0]);
++      free(frame->side_data);
++    }
++   
++    //add_sei_data++;
++#endif
+     if (got_packet) {
+         ret = write_frame(oc, &c->time_base, ost->st, &pkt);
+     } else {
+@@ -589,7 +670,8 @@ int main(int argc, char **argv)
+     }
+     if (!oc)
+         return 1;
+-
++    
++    //oc->oformat->video_codec = AV_CODEC_ID_H264;
+     fmt = oc->oformat;
+ 
+     /* Add the audio and video streams using the default format codecs
+diff --git a/libavcodec/h264_sei.c b/libavcodec/h264_sei.c
+index d4eb9c0..a1d7da3 100644
+--- a/libavcodec/h264_sei.c
++++ b/libavcodec/h264_sei.c
+@@ -1,4 +1,4 @@
+-/*
++ /*
+  * H.26L/H.264/AVC/JVT/14496-10/... SEI decoding
+  * Copyright (c) 2003 Michael Niedermayer <michaelni@gmx.at>
+  *
+@@ -461,6 +461,13 @@ int ff_h264_sei_decode(H264SEIContext *h, GetBitContext *gb,
+             break;
+         default:
+             av_log(logctx, AV_LOG_DEBUG, "unknown SEI type %d\n", type);
++            h->h264_sei_default_data = av_buffer_alloc(size);
++            for (int i = 0 ; i < size; i++)
++            {
++                unsigned int k = get_bits(gb, 8);
++                //printf("\nSEI data[%d]:%d",i,k);
++                h->h264_sei_default_data->data[i] = k;
++            }
+         }
+         if (ret < 0 && ret != AVERROR_PS_NOT_FOUND)
+             return ret;
+diff --git a/libavcodec/h264_sei.h b/libavcodec/h264_sei.h
+index a75c3aa..92253f3 100644
+--- a/libavcodec/h264_sei.h
++++ b/libavcodec/h264_sei.h
+@@ -185,6 +185,7 @@ typedef struct H264SEIContext {
+     H264SEIDisplayOrientation display_orientation;
+     H264SEIGreenMetaData green_metadata;
+     H264SEIAlternativeTransfer alternative_transfer;
++    AVBufferRef *h264_sei_default_data;
+ } H264SEIContext;
+ 
+ struct H264ParamSets;
+diff --git a/libavcodec/h264dec.c b/libavcodec/h264dec.c
+index 00d922f..86b57b0 100644
+--- a/libavcodec/h264dec.c
++++ b/libavcodec/h264dec.c
+@@ -953,6 +953,15 @@ static int send_next_delayed_frame(H264Context *h, AVFrame *dst_frame,
+     return buf_index;
+ }
+ 
++static void free_side_data(AVFrameSideData **ptr_sd)
++{
++    AVFrameSideData *sd = *ptr_sd;
++
++    av_buffer_unref(&sd->buf);
++    av_dict_free(&sd->metadata);
++    av_freep(ptr_sd);
++}
++
+ static int h264_decode_frame(AVCodecContext *avctx, void *data,
+                              int *got_frame, AVPacket *avpkt)
+ {
+@@ -988,7 +997,40 @@ static int h264_decode_frame(AVCodecContext *avctx, void *data,
+                                             avctx->err_recognition, avctx);
+     }
+ 
++#if 1
++    if (pict && pict->nb_side_data) 
++    {
++       int i;
++       for (i = 0; i < pict->nb_side_data; i++) {free_side_data(&pict->side_data[i]);}
++       pict->nb_side_data = 0;
++       av_freep(&pict->side_data);
++       pict->side_data = NULL;
++    }
++
++#endif
++
++    h->sei.h264_sei_default_data = NULL;
++
++
+     buf_index = decode_nal_units(h, buf, buf_size);
++#if 1 
++    if (h  &&  h->sei.h264_sei_default_data)
++    {  
++       if (pict && h->sei.h264_sei_default_data->data)
++       {
++          printf("\nlibh264::decode_nal_units done,sizeof side data =%d",h->sei.h264_sei_default_data->size);
++          AVFrameSideData *sd;
++          sd = av_frame_new_side_data_from_buf(pict,AV_FRAME_DATA_GOP_TIMECODE,h->sei.h264_sei_default_data);
++          if (!sd)
++          {
++             printf("\n error in allocating side data");
++             av_buffer_unref(&h->sei.h264_sei_default_data);
++             return AVERROR(ENOMEM);
++          }
++       }
++       else printf("\n sei decoded data can not dump because pict is not valid");
++    }
++#endif 
+     if (buf_index < 0)
+         return AVERROR_INVALIDDATA;
+ 
+diff --git a/libavcodec/libx264.c b/libavcodec/libx264.c
+index a68d0a7..ccc53db 100644
+--- a/libavcodec/libx264.c
++++ b/libavcodec/libx264.c
+@@ -292,6 +292,8 @@ static int X264_frame(AVCodecContext *ctx, AVPacket *pkt, const AVFrame *frame,
+ #endif
+         x4->pic.img.i_csp |= X264_CSP_HIGH_DEPTH;
+     x4->pic.img.i_plane = avfmt2_num_planes(ctx->pix_fmt);
++    
++    printf("\nX264_frame called\n");
+ 
+     if (frame) {
+         for (i = 0; i < x4->pic.img.i_plane; i++) {
+@@ -323,6 +325,8 @@ static int X264_frame(AVCodecContext *ctx, AVPacket *pkt, const AVFrame *frame,
+         }
+         reconfig_encoder(ctx, frame);
+ 
++    	printf("\nmy endoning libx264 called,sei=%d\n",x4->a53_cc);
++
+         if (x4->a53_cc) {
+             void *sei_data;
+             size_t sei_size;
+@@ -343,6 +347,22 @@ static int X264_frame(AVCodecContext *ctx, AVPacket *pkt, const AVFrame *frame,
+                     x4->pic.extra_sei.num_payloads = 1;
+                     x4->pic.extra_sei.payloads[0].payload_type = 4;
+                 }
++#if 1
++            } else if (frame->nb_side_data && frame->side_data) {
++                x4->pic.extra_sei.payloads = av_mallocz(sizeof(x4->pic.extra_sei.payloads[0]));
++                if (x4->pic.extra_sei.payloads == NULL) {
++                    av_log(ctx, AV_LOG_ERROR, "Not enough memory for closed captions, skipping\n");
++                    av_free(sei_data);
++                } else {
++                    printf("\n setting sei data 2");
++                    x4->pic.extra_sei.sei_free = av_free;
++
++                    x4->pic.extra_sei.payloads[0].payload_size = frame->side_data[0]->size;
++                    x4->pic.extra_sei.payloads[0].payload = frame->side_data[0]->data;
++                    x4->pic.extra_sei.num_payloads = 1;
++                    x4->pic.extra_sei.payloads[0].payload_type = 64;
++                }
++#endif
+             }
+         }
+     }
